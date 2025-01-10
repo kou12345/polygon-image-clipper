@@ -4,6 +4,13 @@ import { Button } from "./components/ui/button";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
+// Types
+interface Point {
+  x: number;
+  y: number;
+}
+
+// PDF変換ユーティリティ
 const convertPDFToBase64Images = async (file: File): Promise<string[]> => {
   const arrayBuffer = await file.arrayBuffer();
   const loadingTask = pdfjs.getDocument({
@@ -22,9 +29,8 @@ const convertPDFToBase64Images = async (file: File): Promise<string[]> => {
     canvas.height = viewport.height;
     canvas.width = viewport.width;
     const renderContext = canvas.getContext("2d");
-    if (!renderContext) {
-      return [];
-    }
+    if (!renderContext) return [];
+
     const renderTask = page.render({
       canvasContext: renderContext,
       viewport,
@@ -38,17 +44,270 @@ const convertPDFToBase64Images = async (file: File): Promise<string[]> => {
   return base64ImageList;
 };
 
+// ローディングコンポーネント
+const LoadingSpinner = () => (
+  <div
+    style={{
+      display: "flex",
+      justifyContent: "center",
+      alignItems: "center",
+      marginTop: "20px",
+      flexDirection: "column",
+      gap: "10px",
+    }}
+  >
+    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+    <p className="text-sm text-gray-600">Converting PDF...</p>
+  </div>
+);
+
+// ページ選択コンポーネント
+const PageSelector = ({
+  pageCount,
+  onPageChange,
+}: {
+  pageCount: number;
+  currentPage: number;
+  onPageChange: (index: number) => void;
+}) => (
+  <div style={{ marginBottom: "10px" }}>
+    {Array.from({ length: pageCount }).map((_, index) => (
+      <Button
+        key={index}
+        onClick={() => onPageChange(index)}
+        style={{ marginRight: "5px" }}
+      >
+        Page {index + 1}
+      </Button>
+    ))}
+  </div>
+);
+
+// クリップされた画像カードコンポーネント
+const ClippedImageCard = ({
+  imageUrl,
+  index,
+  total,
+  onDownload,
+  onDelete,
+}: {
+  imageUrl: string;
+  index: number;
+  total: number;
+  onDownload: () => void;
+  onDelete: () => void;
+}) => (
+  <div
+    style={{
+      border: "1px solid #ddd",
+      borderRadius: "4px",
+      padding: "8px",
+      backgroundColor: "white",
+    }}
+  >
+    <img
+      src={imageUrl}
+      alt={`Clipped image ${index + 1}`}
+      style={{
+        width: "100%",
+        height: "auto",
+        display: "block",
+        borderRadius: "2px",
+      }}
+    />
+    <div
+      style={{
+        marginTop: "8px",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      }}
+    >
+      <span className="text-sm text-gray-600">Clip {total - index}</span>
+      <div style={{ display: "flex", gap: "4px" }}>
+        <Button onClick={onDownload} size="sm">
+          Download
+        </Button>
+        <Button onClick={onDelete} variant="destructive" size="sm">
+          Delete
+        </Button>
+      </div>
+    </div>
+  </div>
+);
+// クリップされた画像ギャラリーコンポーネント
+const ClippedImagesGallery = ({
+  images,
+  onDelete,
+  onClearAll,
+}: {
+  images: string[];
+  onDelete: (index: number) => void;
+  onClearAll: () => void;
+}) => (
+  <div style={{ marginTop: "20px" }}>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: "10px",
+      }}
+    >
+      <h3 className="text-lg font-semibold">Clipped Images:</h3>
+      <Button onClick={onClearAll} variant="destructive" size="sm">
+        Clear All
+      </Button>
+    </div>
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+        gap: "16px",
+        padding: "16px",
+        backgroundColor: "#f5f5f5",
+        borderRadius: "8px",
+      }}
+    >
+      {images.map((imageUrl, index) => (
+        <ClippedImageCard
+          key={index}
+          imageUrl={imageUrl}
+          index={index}
+          total={images.length}
+          onDelete={() => onDelete(index)}
+          onDownload={() => {
+            const link = document.createElement("a");
+            link.download = `clipped-image-${index}.jpg`;
+            link.href = imageUrl;
+            link.click();
+          }}
+        />
+      ))}
+    </div>
+  </div>
+);
+
+// キャンバス操作フック
+const useCanvasOperations = () => {
+  const getCanvasCoordinates = (
+    event: React.MouseEvent<HTMLCanvasElement>,
+    canvas: HTMLCanvasElement
+  ): Point => {
+    const rect = canvas.getBoundingClientRect();
+    const displayWidth = canvas.clientWidth;
+    const displayHeight = canvas.clientHeight;
+    const actualWidth = canvas.width;
+    const actualHeight = canvas.height;
+    const scaleX = actualWidth / displayWidth;
+    const scaleY = actualHeight / displayHeight;
+
+    return {
+      x: (event.clientX - rect.left) * scaleX,
+      y: (event.clientY - rect.top) * scaleY,
+    };
+  };
+
+  const drawCanvas = (
+    canvas: HTMLCanvasElement,
+    image: string,
+    points: Point[],
+    windowWidth: number
+  ) => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const img = new Image();
+    img.src = image;
+    img.onload = () => {
+      const originalWidth = img.width;
+      const originalHeight = img.height;
+      const maxWidth = windowWidth * 0.9;
+      const scale = Math.min(1, maxWidth / originalWidth);
+
+      canvas.width = originalWidth;
+      canvas.height = originalHeight;
+      canvas.style.width = `${originalWidth * scale}px`;
+      canvas.style.height = `${originalHeight * scale}px`;
+
+      ctx.drawImage(img, 0, 0);
+      canvas.dataset.scale = scale.toString();
+
+      if (points.length > 0) {
+        // Draw polygon
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        points.forEach((point, index) => {
+          if (index > 0) ctx.lineTo(point.x, point.y);
+        });
+        if (points.length > 2) ctx.closePath();
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // Draw points
+        points.forEach((point, index) => {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = "red";
+          ctx.fill();
+          ctx.fillStyle = "white";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.font = "bold 10px Arial";
+          ctx.fillText((index + 1).toString(), point.x, point.y);
+        });
+      }
+    };
+  };
+
+  return { getCanvasCoordinates, drawCanvas };
+};
+
+// メインアプリケーション
 const App = () => {
   const [images, setImages] = useState<string[]>([]);
-  const [selectedPoints, setSelectedPoints] = useState<
-    { x: number; y: number }[]
-  >([]);
+  const [selectedPoints, setSelectedPoints] = useState<Point[]>([]);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [dragPointIndex, setDragPointIndex] = useState<number | null>(null);
   const [clippedImages, setClippedImages] = useState<string[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+
+  // カーソルスタイルの動的な設定
+  const getCanvasStyle = (event?: React.MouseEvent<HTMLCanvasElement>) => {
+    const baseStyle = {
+      border: "1px solid black",
+      display: "block",
+      maxWidth: "90%",
+      margin: "0 auto",
+    };
+
+    if (dragPointIndex !== null) {
+      return { ...baseStyle, cursor: "move" };
+    }
+
+    const canvas = canvasRef.current;
+    if (canvas && event && selectedPoints.length > 0) {
+      const coords = getCanvasCoordinates(event, canvas);
+      const isNearPoint = selectedPoints.some((point) => {
+        const distance = Math.sqrt(
+          Math.pow(point.x - coords.x, 2) + Math.pow(point.y - coords.y, 2)
+        );
+        return distance < 20;
+      });
+
+      if (isNearPoint) {
+        return { ...baseStyle, cursor: "pointer" };
+      }
+    }
+
+    return baseStyle;
+  };
+  const [canvasStyle, setCanvasStyle] = useState(getCanvasStyle());
+
+  const { getCanvasCoordinates, drawCanvas } = useCanvasOperations();
 
   // ウィンドウリサイズを監視
   useEffect(() => {
@@ -59,6 +318,14 @@ const App = () => {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  // キャンバス描画の更新
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !images[currentImageIndex]) return;
+
+    drawCanvas(canvas, images[currentImageIndex], selectedPoints, windowWidth);
+  }, [images, currentImageIndex, selectedPoints, windowWidth, drawCanvas]);
 
   // PDFファイルアップロードの処理
   const handleFileUpload = async (
@@ -78,197 +345,52 @@ const App = () => {
     }
   };
 
-  // マウスダウンの処理
+  // マウスイベントハンドラー
   const handleMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const displayWidth = canvas.clientWidth;
-    const displayHeight = canvas.clientHeight;
-    const actualWidth = canvas.width;
-    const actualHeight = canvas.height;
-    const scaleX = actualWidth / displayWidth;
-    const scaleY = actualHeight / displayHeight;
-
-    const x = (event.clientX - rect.left) * scaleX;
-    const y = (event.clientY - rect.top) * scaleY;
-
-    // 既存の点の近くをクリックした場合、その点をドラッグ開始
+    const coords = getCanvasCoordinates(event, canvas);
     const pointIndex = selectedPoints.findIndex((point) => {
       const distance = Math.sqrt(
-        Math.pow(point.x - x, 2) + Math.pow(point.y - y, 2)
+        Math.pow(point.x - coords.x, 2) + Math.pow(point.y - coords.y, 2)
       );
-      return distance < 20; // 20ピクセル以内
+      return distance < 20;
     });
 
     if (pointIndex !== -1) {
       setDragPointIndex(pointIndex);
     } else {
-      setSelectedPoints([...selectedPoints, { x, y }]);
+      setSelectedPoints([...selectedPoints, coords]);
     }
   };
 
-  // カーソルスタイルの動的な設定
-  const getCanvasStyle = (event?: React.MouseEvent<HTMLCanvasElement>) => {
-    const baseStyle = {
-      border: "1px solid black",
-      display: "block",
-      maxWidth: "90%",
-      margin: "0 auto",
-    };
-
-    // ドラッグ中は move カーソル
-    if (dragPointIndex !== null) {
-      return {
-        ...baseStyle,
-        cursor: "move",
-      };
-    }
-
-    // マウスが頂点の近くにあるかチェック
-    const canvas = canvasRef.current;
-    if (canvas && event && selectedPoints.length > 0) {
-      const rect = canvas.getBoundingClientRect();
-      const displayWidth = canvas.clientWidth;
-      const displayHeight = canvas.clientHeight;
-      const actualWidth = canvas.width;
-      const actualHeight = canvas.height;
-      const scaleX = actualWidth / displayWidth;
-      const scaleY = actualHeight / displayHeight;
-
-      const mouseX = (event.clientX - rect.left) * scaleX;
-      const mouseY = (event.clientY - rect.top) * scaleY;
-
-      const isNearPoint = selectedPoints.some((point) => {
-        const distance = Math.sqrt(
-          Math.pow(point.x - mouseX, 2) + Math.pow(point.y - mouseY, 2)
-        );
-        return distance < 20; // 20ピクセル以内
-      });
-
-      if (isNearPoint) {
-        return {
-          ...baseStyle,
-          cursor: "pointer",
-        };
-      }
-    }
-
-    return baseStyle;
-  };
-  const [canvasStyle, setCanvasStyle] = useState(getCanvasStyle());
-
-  // マウス移動の処理を更新
   const handleMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    // ドラッグ処理
     if (dragPointIndex !== null) {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
-      const rect = canvas.getBoundingClientRect();
-      const displayWidth = canvas.clientWidth;
-      const displayHeight = canvas.clientHeight;
-      const actualWidth = canvas.width;
-      const actualHeight = canvas.height;
-      const scaleX = actualWidth / displayWidth;
-      const scaleY = actualHeight / displayHeight;
-
-      const x = (event.clientX - rect.left) * scaleX;
-      const y = (event.clientY - rect.top) * scaleY;
-
+      const coords = getCanvasCoordinates(event, canvas);
       const newPoints = [...selectedPoints];
-      newPoints[dragPointIndex] = { x, y };
+      newPoints[dragPointIndex] = coords;
       setSelectedPoints(newPoints);
     }
 
-    // カーソルスタイルの更新
     setCanvasStyle(getCanvasStyle(event));
   };
 
-  // マウスアップの処理
   const handleMouseUp = () => {
     setDragPointIndex(null);
   };
-
-  // キャンバスへの描画処理
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !images[currentImageIndex]) return;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    // 画像の描画
-    const img = new Image();
-    img.src = images[currentImageIndex];
-    img.onload = () => {
-      // 画像の元のサイズを保持
-      const originalWidth = img.width;
-      const originalHeight = img.height;
-
-      // ウィンドウ幅に合わせてスケールを計算（余白を考慮して0.9をかける）
-      const maxWidth = windowWidth * 0.9;
-      const scale = Math.min(1, maxWidth / originalWidth);
-
-      // キャンバスのサイズを設定
-      canvas.width = originalWidth;
-      canvas.height = originalHeight;
-
-      // 実際の表示サイズをスタイルで制御
-      canvas.style.width = `${originalWidth * scale}px`;
-      canvas.style.height = `${originalHeight * scale}px`;
-
-      ctx.drawImage(img, 0, 0);
-
-      // クリック座標の変換に使用するスケール情報を保存
-      canvas.dataset.scale = scale.toString();
-
-      // ポリゴンの描画
-      if (selectedPoints.length > 0) {
-        // ラインの描画
-        ctx.beginPath();
-        ctx.moveTo(selectedPoints[0].x, selectedPoints[0].y);
-        selectedPoints.forEach((point, index) => {
-          if (index > 0) {
-            ctx.lineTo(point.x, point.y);
-          }
-        });
-        if (selectedPoints.length > 2) {
-          ctx.closePath();
-        }
-        ctx.strokeStyle = "red";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        // 点の描画
-        selectedPoints.forEach((point, index) => {
-          ctx.beginPath();
-          ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
-          ctx.fillStyle = "red";
-          ctx.fill();
-
-          // 点の番号を描画（オプション）
-          ctx.fillStyle = "white";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.font = "bold 10px Arial";
-          ctx.fillText((index + 1).toString(), point.x, point.y);
-        });
-      }
-    };
-  }, [images, currentImageIndex, selectedPoints, windowWidth]);
 
   // クリップした画像のダウンロード
   const handleDownload = () => {
     const canvas = canvasRef.current;
     if (!canvas || selectedPoints.length < 3) return;
 
-    // 元の画像を読み込み
     const img = new Image();
     img.src = images[currentImageIndex];
     img.onload = () => {
-      // バウンディングボックスの計算
       const minX = Math.min(...selectedPoints.map((p) => p.x));
       const minY = Math.min(...selectedPoints.map((p) => p.y));
       const maxX = Math.max(...selectedPoints.map((p) => p.x));
@@ -276,14 +398,12 @@ const App = () => {
       const width = maxX - minX;
       const height = maxY - minY;
 
-      // 新しいキャンバスを作成（クリップ領域のサイズに設定）
       const clipCanvas = document.createElement("canvas");
       clipCanvas.width = width;
       clipCanvas.height = height;
       const clipCtx = clipCanvas.getContext("2d");
       if (!clipCtx) return;
 
-      // クリッピングパスの作成（座標を相対位置に変換）
       clipCtx.beginPath();
       clipCtx.moveTo(selectedPoints[0].x - minX, selectedPoints[0].y - minY);
       selectedPoints.forEach((point, index) => {
@@ -294,14 +414,11 @@ const App = () => {
       clipCtx.closePath();
       clipCtx.clip();
 
-      // 画像を描画（クリップ領域の位置を考慮してオフセット）
       clipCtx.drawImage(img, minX, minY, width, height, 0, 0, width, height);
 
-      // 切り取った画像を配列に追加
       const clippedImageUrl = clipCanvas.toDataURL("image/jpeg");
       setClippedImages((prev) => [clippedImageUrl, ...prev]);
 
-      // ダウンロード
       const link = document.createElement("a");
       link.download = `clipped-image-${currentImageIndex}.jpg`;
       link.href = clippedImageUrl;
@@ -309,12 +426,11 @@ const App = () => {
     };
   };
 
-  // 切り取り画像の削除
+  // 切り取り画像の管理
   const removeClippedImage = (index: number) => {
     setClippedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // 全ての切り取り画像をクリア
   const clearAllClippedImages = () => {
     setClippedImages([]);
   };
@@ -328,35 +444,15 @@ const App = () => {
         disabled={isLoading}
       />
 
-      {isLoading && (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            marginTop: "20px",
-            flexDirection: "column",
-            gap: "10px",
-          }}
-        >
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
-          <p className="text-sm text-gray-600">Converting PDF...</p>
-        </div>
-      )}
+      {isLoading && <LoadingSpinner />}
 
       {!isLoading && images.length > 0 && (
         <div>
-          <div style={{ marginBottom: "10px" }}>
-            {images.map((_, index) => (
-              <Button
-                key={index}
-                onClick={() => setCurrentImageIndex(index)}
-                style={{ marginRight: "5px" }}
-              >
-                Page {index + 1}
-              </Button>
-            ))}
-          </div>
+          <PageSelector
+            pageCount={images.length}
+            currentPage={currentImageIndex}
+            onPageChange={setCurrentImageIndex}
+          />
 
           <div style={{ overflowX: "auto" }}>
             <canvas
@@ -387,92 +483,12 @@ const App = () => {
             </Button>
           </div>
 
-          {/* 切り取った画像の表示セクション */}
           {clippedImages.length > 0 && (
-            <div style={{ marginTop: "20px" }}>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "10px",
-                }}
-              >
-                <h3 className="text-lg font-semibold">Clipped Images:</h3>
-                <Button
-                  onClick={clearAllClippedImages}
-                  variant="destructive"
-                  size="sm"
-                >
-                  Clear All
-                </Button>
-              </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-                  gap: "16px",
-                  padding: "16px",
-                  backgroundColor: "#f5f5f5",
-                  borderRadius: "8px",
-                }}
-              >
-                {clippedImages.map((imageUrl, index) => (
-                  <div
-                    key={index}
-                    style={{
-                      border: "1px solid #ddd",
-                      borderRadius: "4px",
-                      padding: "8px",
-                      backgroundColor: "white",
-                    }}
-                  >
-                    <img
-                      src={imageUrl}
-                      alt={`Clipped image ${index + 1}`}
-                      style={{
-                        width: "100%",
-                        height: "auto",
-                        display: "block",
-                        borderRadius: "2px",
-                      }}
-                    />
-                    <div
-                      style={{
-                        marginTop: "8px",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                      }}
-                    >
-                      <span className="text-sm text-gray-600">
-                        Clip {clippedImages.length - index}
-                      </span>
-                      <div style={{ display: "flex", gap: "4px" }}>
-                        <Button
-                          onClick={() => {
-                            const link = document.createElement("a");
-                            link.download = `clipped-image-${index}.jpg`;
-                            link.href = imageUrl;
-                            link.click();
-                          }}
-                          size="sm"
-                        >
-                          Download
-                        </Button>
-                        <Button
-                          onClick={() => removeClippedImage(index)}
-                          variant="destructive"
-                          size="sm"
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ClippedImagesGallery
+              images={clippedImages}
+              onDelete={removeClippedImage}
+              onClearAll={clearAllClippedImages}
+            />
           )}
         </div>
       )}
