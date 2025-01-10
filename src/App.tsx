@@ -4,11 +4,10 @@ import { Button } from "./components/ui/button";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-// Types
-interface Point {
+type Point = {
   x: number;
   y: number;
-}
+};
 
 // PDF変換ユーティリティ
 const convertPDFToBase64Images = async (file: File): Promise<string[]> => {
