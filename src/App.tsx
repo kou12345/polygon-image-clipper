@@ -46,6 +46,7 @@ const App = () => {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [dragPointIndex, setDragPointIndex] = useState<number | null>(null);
+  const [clippedImages, setClippedImages] = useState<string[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
@@ -156,7 +157,6 @@ const App = () => {
 
     return baseStyle;
   };
-
   const [canvasStyle, setCanvasStyle] = useState(getCanvasStyle());
 
   // マウス移動の処理を更新
@@ -297,12 +297,26 @@ const App = () => {
       // 画像を描画（クリップ領域の位置を考慮してオフセット）
       clipCtx.drawImage(img, minX, minY, width, height, 0, 0, width, height);
 
+      // 切り取った画像を配列に追加
+      const clippedImageUrl = clipCanvas.toDataURL("image/jpeg");
+      setClippedImages((prev) => [clippedImageUrl, ...prev]);
+
       // ダウンロード
       const link = document.createElement("a");
       link.download = `clipped-image-${currentImageIndex}.jpg`;
-      link.href = clipCanvas.toDataURL("image/jpeg");
+      link.href = clippedImageUrl;
       link.click();
     };
+  };
+
+  // 切り取り画像の削除
+  const removeClippedImage = (index: number) => {
+    setClippedImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // 全ての切り取り画像をクリア
+  const clearAllClippedImages = () => {
+    setClippedImages([]);
   };
 
   return (
@@ -372,6 +386,94 @@ const App = () => {
               Download Clipped Image
             </Button>
           </div>
+
+          {/* 切り取った画像の表示セクション */}
+          {clippedImages.length > 0 && (
+            <div style={{ marginTop: "20px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "10px",
+                }}
+              >
+                <h3 className="text-lg font-semibold">Clipped Images:</h3>
+                <Button
+                  onClick={clearAllClippedImages}
+                  variant="destructive"
+                  size="sm"
+                >
+                  Clear All
+                </Button>
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+                  gap: "16px",
+                  padding: "16px",
+                  backgroundColor: "#f5f5f5",
+                  borderRadius: "8px",
+                }}
+              >
+                {clippedImages.map((imageUrl, index) => (
+                  <div
+                    key={index}
+                    style={{
+                      border: "1px solid #ddd",
+                      borderRadius: "4px",
+                      padding: "8px",
+                      backgroundColor: "white",
+                    }}
+                  >
+                    <img
+                      src={imageUrl}
+                      alt={`Clipped image ${index + 1}`}
+                      style={{
+                        width: "100%",
+                        height: "auto",
+                        display: "block",
+                        borderRadius: "2px",
+                      }}
+                    />
+                    <div
+                      style={{
+                        marginTop: "8px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <span className="text-sm text-gray-600">
+                        Clip {clippedImages.length - index}
+                      </span>
+                      <div style={{ display: "flex", gap: "4px" }}>
+                        <Button
+                          onClick={() => {
+                            const link = document.createElement("a");
+                            link.download = `clipped-image-${index}.jpg`;
+                            link.href = imageUrl;
+                            link.click();
+                          }}
+                          size="sm"
+                        >
+                          Download
+                        </Button>
+                        <Button
+                          onClick={() => removeClippedImage(index)}
+                          variant="destructive"
+                          size="sm"
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
