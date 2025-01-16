@@ -24,7 +24,7 @@ const convertPDFToBase64Images = async (file: File): Promise<string[]> => {
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 3 });
+    const viewport = page.getViewport({ scale: 5 });
     canvas.height = viewport.height;
     canvas.width = viewport.width;
     const renderContext = canvas.getContext("2d");
@@ -56,7 +56,7 @@ const LoadingSpinner = () => (
     }}
   >
     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
-    <p className="text-sm text-gray-600">Converting PDF...</p>
+    <p className="text-sm text-gray-600">PDF 表示中...</p>
   </div>
 );
 
@@ -82,6 +82,78 @@ const PageSelector = ({
   </div>
 );
 
+// モーダルコンポーネント
+const ImageModal = ({
+  imageUrl,
+  isOpen,
+  onClose,
+}: {
+  imageUrl: string;
+  isOpen: boolean;
+  onClose: () => void;
+}) => {
+  if (!isOpen) return null;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: "rgba(0, 0, 0, 0.7)",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        zIndex: 1000,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          position: "relative",
+          maxWidth: "90%",
+          maxHeight: "90%",
+          overflow: "auto",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={imageUrl}
+          alt="Modal view"
+          style={{
+            maxWidth: "100%",
+            maxHeight: "90vh",
+            objectFit: "contain",
+          }}
+        />
+        <button
+          onClick={onClose}
+          style={{
+            position: "absolute",
+            top: "10px",
+            right: "10px",
+            background: "white",
+            border: "none",
+            borderRadius: "50%",
+            width: "30px",
+            height: "30px",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: "20px",
+          }}
+        >
+          x
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// クリップされた画像カードコンポーネント
 // クリップされた画像カードコンポーネント
 const ClippedImageCard = ({
   imageUrl,
@@ -95,54 +167,100 @@ const ClippedImageCard = ({
   total: number;
   onDownload: () => void;
   onDelete: () => void;
-}) => (
-  <div
-    style={{
-      border: "1px solid #ddd",
-      borderRadius: "4px",
-      padding: "8px",
-      backgroundColor: "white",
-    }}
-  >
-    <img
-      src={imageUrl}
-      alt={`Clipped image ${index + 1}`}
-      style={{
-        width: "100%",
-        height: "auto",
-        display: "block",
-        borderRadius: "2px",
-      }}
-    />
+}) => {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [date, setDate] = useState<string>("");
+
+  return (
     <div
       style={{
-        marginTop: "8px",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
+        border: "1px solid #ddd",
+        borderRadius: "4px",
+        padding: "8px",
+        backgroundColor: "white",
       }}
     >
-      <span className="text-sm text-gray-600">Clip {total - index}</span>
-      <div style={{ display: "flex", gap: "4px" }}>
-        <Button onClick={onDownload} size="sm">
-          Download
-        </Button>
-        <Button onClick={onDelete} variant="destructive" size="sm">
-          Delete
-        </Button>
+      <img
+        src={imageUrl}
+        alt={`Clipped image ${index + 1}`}
+        style={{
+          width: "100%",
+          height: "auto",
+          display: "block",
+          borderRadius: "2px",
+          cursor: "pointer",
+        }}
+        onClick={() => setIsModalOpen(true)}
+      />
+      <div
+        style={{
+          marginTop: "8px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span className="text-sm text-gray-600">Clip {total - index}</span>
+          <div style={{ display: "flex", gap: "4px" }}>
+            <Button onClick={onDownload} size="sm">
+              Download
+            </Button>
+            <Button onClick={onDelete} variant="destructive" size="sm">
+              Delete
+            </Button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: "4px",
+              border: "1px solid #ddd",
+              fontSize: "14px",
+              width: "100%",
+            }}
+            aria-label="Date"
+          />
+        </div>
       </div>
+
+      <ImageModal
+        imageUrl={imageUrl}
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+      />
     </div>
-  </div>
-);
+  );
+};
+
 // クリップされた画像ギャラリーコンポーネント
 const ClippedImagesGallery = ({
   images,
   onDelete,
   onClearAll,
+  onDownload,
 }: {
   images: string[];
   onDelete: (index: number) => void;
   onClearAll: () => void;
+  onDownload: (index: number) => void;
 }) => (
   <div style={{ marginTop: "20px" }}>
     <div
@@ -175,12 +293,7 @@ const ClippedImagesGallery = ({
           index={index}
           total={images.length}
           onDelete={() => onDelete(index)}
-          onDownload={() => {
-            const link = document.createElement("a");
-            link.download = `clipped-image-${index}.jpg`;
-            link.href = imageUrl;
-            link.click();
-          }}
+          onDownload={() => onDownload(index)}
         />
       ))}
     </div>
@@ -382,8 +495,8 @@ const App = () => {
     setDragPointIndex(null);
   };
 
-  // クリップした画像のダウンロード
-  const handleDownload = () => {
+  // クリップした画像の確定
+  const handleClip = () => {
     const canvas = canvasRef.current;
     if (!canvas || selectedPoints.length < 3) return;
 
@@ -417,12 +530,16 @@ const App = () => {
 
       const clippedImageUrl = clipCanvas.toDataURL("image/jpeg");
       setClippedImages((prev) => [clippedImageUrl, ...prev]);
-
-      const link = document.createElement("a");
-      link.download = `clipped-image-${currentImageIndex}.jpg`;
-      link.href = clippedImageUrl;
-      link.click();
+      setSelectedPoints([]); // 切り取り後にポイントをクリア
     };
+  };
+
+  // 特定の画像のダウンロード
+  const handleDownload = (imageUrl: string, index: number) => {
+    const link = document.createElement("a");
+    link.download = `clipped-image-${index}.jpg`;
+    link.href = imageUrl;
+    link.click();
   };
 
   // 切り取り画像の管理
@@ -475,10 +592,11 @@ const App = () => {
               Clear Points
             </Button>
             <Button
-              onClick={handleDownload}
+              onClick={handleClip}
               disabled={selectedPoints.length < 3}
+              style={{ marginRight: "10px" }}
             >
-              Download Clipped Image
+              Clip Image
             </Button>
           </div>
 
@@ -487,6 +605,9 @@ const App = () => {
               images={clippedImages}
               onDelete={removeClippedImage}
               onClearAll={clearAllClippedImages}
+              onDownload={(index) =>
+                handleDownload(clippedImages[index], index)
+              }
             />
           )}
         </div>
