@@ -4,9 +4,39 @@ import { Button } from "./components/ui/button";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
+// 型定義
 type Point = {
   x: number;
   y: number;
+};
+
+interface ClippedImageInfo {
+  imageUrl: string;
+  coordinates: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    pageIndex: number;
+  };
+  points: Point[];
+  zIndex: number;
+}
+
+// ユーティリティ関数
+const getImageDimensions = (
+  imageUrl: string
+): Promise<{ width: number; height: number }> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      resolve({
+        width: img.width,
+        height: img.height,
+      });
+    };
+    img.src = imageUrl;
+  });
 };
 
 // PDF変換ユーティリティ
@@ -43,6 +73,72 @@ const convertPDFToBase64Images = async (file: File): Promise<string[]> => {
   return base64ImageList;
 };
 
+// 画像再構築ユーティリティ
+const reconstructFromClippedImages = async (
+  pageIndex: number,
+  originalImageWidth: number,
+  originalImageHeight: number,
+  clippedImages: ClippedImageInfo[]
+): Promise<string | null> => {
+  const pageClips = clippedImages.filter(
+    (clip) => clip.coordinates.pageIndex === pageIndex
+  );
+
+  if (pageClips.length === 0) return null;
+
+  return new Promise((resolve) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = originalImageWidth;
+    canvas.height = originalImageHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+
+    // 背景を白で塗りつぶす
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 切り取った画像を順番に配置
+    const loadClippedImages = pageClips.map((clip) => {
+      return new Promise<void>((resolveClip) => {
+        const clipImg = new Image();
+        clipImg.onload = () => {
+          ctx.save();
+          ctx.beginPath();
+          clip.points.forEach((point, index) => {
+            if (index === 0) {
+              ctx.moveTo(point.x, point.y);
+            } else {
+              ctx.lineTo(point.x, point.y);
+            }
+          });
+          ctx.closePath();
+          ctx.clip();
+
+          const { minX, minY, maxX, maxY } = clip.coordinates;
+          ctx.drawImage(
+            clipImg,
+            0,
+            0,
+            clipImg.width,
+            clipImg.height,
+            minX,
+            minY,
+            maxX - minX,
+            maxY - minY
+          );
+          ctx.restore();
+          resolveClip();
+        };
+        clipImg.src = clip.imageUrl;
+      });
+    });
+
+    Promise.all(loadClippedImages).then(() => {
+      resolve(canvas.toDataURL("image/jpeg"));
+    });
+  });
+};
+
 // ローディングコンポーネント
 const LoadingSpinner = () => (
   <div
@@ -63,6 +159,7 @@ const LoadingSpinner = () => (
 // ページ選択コンポーネント
 const PageSelector = ({
   pageCount,
+  currentPage,
   onPageChange,
 }: {
   pageCount: number;
@@ -75,6 +172,7 @@ const PageSelector = ({
         key={index}
         onClick={() => onPageChange(index)}
         style={{ marginRight: "5px" }}
+        variant={currentPage === index ? "default" : "outline"}
       >
         Page {index + 1}
       </Button>
@@ -153,16 +251,82 @@ const ImageModal = ({
   );
 };
 
-// クリップされた画像カードコンポーネント
+// 再構築プレビューコンポーネント
+const ReconstructedPreview = ({
+  pageIndex,
+  originalImage,
+  clippedImages,
+}: {
+  pageIndex: number;
+  originalImage: string;
+  clippedImages: ClippedImageInfo[];
+}) => {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const loadPreview = async () => {
+      const dimensions = await getImageDimensions(originalImage);
+      const reconstructed = await reconstructFromClippedImages(
+        pageIndex,
+        dimensions.width,
+        dimensions.height,
+        clippedImages
+      );
+      setPreviewUrl(reconstructed);
+    };
+
+    loadPreview();
+  }, [pageIndex, originalImage, clippedImages]);
+
+  const handleDownload = () => {
+    if (!previewUrl) return;
+
+    const link = document.createElement("a");
+    link.download = `reconstructed-page-${pageIndex + 1}.jpg`;
+    link.href = previewUrl;
+    link.click();
+  };
+
+  if (!previewUrl) return null;
+
+  return (
+    <div style={{ marginTop: "20px" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "10px",
+        }}
+      >
+        <h3>Reconstructed Preview:</h3>
+        <Button onClick={handleDownload} variant="secondary" size="sm">
+          Download This Page
+        </Button>
+      </div>
+      <img
+        src={previewUrl}
+        alt="Reconstructed preview"
+        style={{
+          maxWidth: "100%",
+          height: "auto",
+          border: "1px solid #ddd",
+          borderRadius: "4px",
+        }}
+      />
+    </div>
+  );
+};
+
 // クリップされた画像カードコンポーネント
 const ClippedImageCard = ({
-  imageUrl,
+  imageInfo,
   index,
   total,
   onDownload,
   onDelete,
 }: {
-  imageUrl: string;
+  imageInfo: ClippedImageInfo;
   index: number;
   total: number;
   onDownload: () => void;
@@ -181,7 +345,7 @@ const ClippedImageCard = ({
       }}
     >
       <img
-        src={imageUrl}
+        src={imageInfo.imageUrl}
         alt={`Clipped image ${index + 1}`}
         style={{
           width: "100%",
@@ -207,7 +371,9 @@ const ClippedImageCard = ({
             alignItems: "center",
           }}
         >
-          <span className="text-sm text-gray-600">Clip {total - index}</span>
+          <span className="text-sm text-gray-600">
+            Clip {total - index} (Page {imageInfo.coordinates.pageIndex + 1})
+          </span>
           <div style={{ display: "flex", gap: "4px" }}>
             <Button onClick={onDownload} size="sm">
               Download
@@ -242,7 +408,7 @@ const ClippedImageCard = ({
       </div>
 
       <ImageModal
-        imageUrl={imageUrl}
+        imageUrl={imageInfo.imageUrl}
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
       />
@@ -256,11 +422,13 @@ const ClippedImagesGallery = ({
   onDelete,
   onClearAll,
   onDownload,
+  onReconstruct,
 }: {
-  images: string[];
+  images: ClippedImageInfo[];
   onDelete: (index: number) => void;
   onClearAll: () => void;
   onDownload: (index: number) => void;
+  onReconstruct: () => void;
 }) => (
   <div style={{ marginTop: "20px" }}>
     <div
@@ -272,9 +440,14 @@ const ClippedImagesGallery = ({
       }}
     >
       <h3 className="text-lg font-semibold">Clipped Images:</h3>
-      <Button onClick={onClearAll} variant="destructive" size="sm">
-        Clear All
-      </Button>
+      <div style={{ display: "flex", gap: "8px" }}>
+        <Button onClick={onReconstruct} variant="secondary" size="sm">
+          Reconstruct Images
+        </Button>
+        <Button onClick={onClearAll} variant="destructive" size="sm">
+          Clear All
+        </Button>
+      </div>
     </div>
     <div
       style={{
@@ -286,10 +459,10 @@ const ClippedImagesGallery = ({
         borderRadius: "8px",
       }}
     >
-      {images.map((imageUrl, index) => (
+      {images.map((imageInfo, index) => (
         <ClippedImageCard
           key={index}
-          imageUrl={imageUrl}
+          imageInfo={imageInfo}
           index={index}
           total={images.length}
           onDelete={() => onDelete(index)}
@@ -383,7 +556,7 @@ const App = () => {
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [dragPointIndex, setDragPointIndex] = useState<number | null>(null);
-  const [clippedImages, setClippedImages] = useState<string[]>([]);
+  const [clippedImages, setClippedImages] = useState<ClippedImageInfo[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
@@ -529,20 +702,61 @@ const App = () => {
       clipCtx.drawImage(img, minX, minY, width, height, 0, 0, width, height);
 
       const clippedImageUrl = clipCanvas.toDataURL("image/jpeg");
-      setClippedImages((prev) => [clippedImageUrl, ...prev]);
-      setSelectedPoints([]); // 切り取り後にポイントをクリア
+
+      const newClippedImage: ClippedImageInfo = {
+        imageUrl: clippedImageUrl,
+        coordinates: {
+          minX,
+          minY,
+          maxX,
+          maxY,
+          pageIndex: currentImageIndex,
+        },
+        points: [...selectedPoints],
+        zIndex: clippedImages.length,
+      };
+
+      setClippedImages((prev) => [newClippedImage, ...prev]);
+      setSelectedPoints([]);
     };
   };
 
-  // 特定の画像のダウンロード
-  const handleDownload = (imageUrl: string, index: number) => {
+  // 画像の再構築
+  const handleReconstruct = async () => {
+    const reconstructedPages = await Promise.all(
+      images.map(async (originalImage, index) => {
+        const dimensions = await getImageDimensions(originalImage);
+        return reconstructFromClippedImages(
+          index,
+          dimensions.width,
+          dimensions.height,
+          clippedImages
+        );
+      })
+    );
+
+    const validPages = reconstructedPages.filter(
+      (page): page is string => page !== null
+    );
+
+    if (validPages.length > 0) {
+      validPages.forEach((page, index) => {
+        const link = document.createElement("a");
+        link.download = `reconstructed-page-${index + 1}.jpg`;
+        link.href = page;
+        link.click();
+      });
+    }
+  };
+
+  // 画像管理関連の関数
+  const handleDownload = (index: number) => {
     const link = document.createElement("a");
-    link.download = `clipped-image-${index}.jpg`;
-    link.href = imageUrl;
+    link.download = `clipped-image-${index + 1}.jpg`;
+    link.href = clippedImages[index].imageUrl;
     link.click();
   };
 
-  // 切り取り画像の管理
   const removeClippedImage = (index: number) => {
     setClippedImages((prev) => prev.filter((_, i) => i !== index));
   };
@@ -601,14 +815,21 @@ const App = () => {
           </div>
 
           {clippedImages.length > 0 && (
-            <ClippedImagesGallery
-              images={clippedImages}
-              onDelete={removeClippedImage}
-              onClearAll={clearAllClippedImages}
-              onDownload={(index) =>
-                handleDownload(clippedImages[index], index)
-              }
-            />
+            <>
+              <ClippedImagesGallery
+                images={clippedImages}
+                onDelete={removeClippedImage}
+                onClearAll={clearAllClippedImages}
+                onDownload={handleDownload}
+                onReconstruct={handleReconstruct}
+              />
+
+              <ReconstructedPreview
+                pageIndex={currentImageIndex}
+                originalImage={images[currentImageIndex]}
+                clippedImages={clippedImages}
+              />
+            </>
           )}
         </div>
       )}
