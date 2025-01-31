@@ -1,29 +1,17 @@
 import * as pdfjs from "pdfjs-dist";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
+import { useImageClipping } from "./⁠hooks/useImageClipping.ts";
+import { useCanvasMouse } from "./⁠hooks/useCanvasMouse.ts";
+import { useCanvasOperations } from "./⁠hooks/useCanvasOperations.ts";
+import { usePDFConversion } from "./⁠hooks/usePDFConversion.ts";
+import { useWindowSize } from "./⁠hooks/useWindowSize.ts";
+import { reconstructFromClippedImages } from "./utils/imageReconstruction.ts";
+import { LoadingSpinner } from "./components/LoadingSpinner.tsx";
+import { ClippedImageInfo } from "./types.ts";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-// 型定義
-type Point = {
-  x: number;
-  y: number;
-};
-
-interface ClippedImageInfo {
-  imageUrl: string;
-  coordinates: {
-    minX: number;
-    minY: number;
-    maxX: number;
-    maxY: number;
-    pageIndex: number;
-  };
-  points: Point[];
-  zIndex: number;
-}
-
-// ユーティリティ関数
 const getImageDimensions = (
   imageUrl: string
 ): Promise<{ width: number; height: number }> => {
@@ -38,123 +26,6 @@ const getImageDimensions = (
     img.src = imageUrl;
   });
 };
-
-// PDF変換ユーティリティ
-const convertPDFToBase64Images = async (file: File): Promise<string[]> => {
-  const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = pdfjs.getDocument({
-    data: arrayBuffer,
-    cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
-    cMapPacked: true,
-  });
-  const pdf = await loadingTask.promise;
-
-  const base64ImageList: string[] = [];
-  const canvas = document.createElement("canvas");
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 5 });
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
-    const renderContext = canvas.getContext("2d");
-    if (!renderContext) return [];
-
-    const renderTask = page.render({
-      canvasContext: renderContext,
-      viewport,
-    });
-    await renderTask.promise;
-
-    const base64Image = canvas.toDataURL("image/jpeg");
-    base64ImageList.push(base64Image);
-  }
-
-  return base64ImageList;
-};
-
-// 画像再構築ユーティリティ
-const reconstructFromClippedImages = async (
-  pageIndex: number,
-  originalImageWidth: number,
-  originalImageHeight: number,
-  clippedImages: ClippedImageInfo[]
-): Promise<string | null> => {
-  const pageClips = clippedImages.filter(
-    (clip) => clip.coordinates.pageIndex === pageIndex
-  );
-
-  if (pageClips.length === 0) return null;
-
-  return new Promise((resolve) => {
-    const canvas = document.createElement("canvas");
-    canvas.width = originalImageWidth;
-    canvas.height = originalImageHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return null;
-
-    // 背景を白で塗りつぶす
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // 切り取った画像を順番に配置
-    const loadClippedImages = pageClips.map((clip) => {
-      return new Promise<void>((resolveClip) => {
-        const clipImg = new Image();
-        clipImg.onload = () => {
-          ctx.save();
-          ctx.beginPath();
-          clip.points.forEach((point, index) => {
-            if (index === 0) {
-              ctx.moveTo(point.x, point.y);
-            } else {
-              ctx.lineTo(point.x, point.y);
-            }
-          });
-          ctx.closePath();
-          ctx.clip();
-
-          const { minX, minY, maxX, maxY } = clip.coordinates;
-          ctx.drawImage(
-            clipImg,
-            0,
-            0,
-            clipImg.width,
-            clipImg.height,
-            minX,
-            minY,
-            maxX - minX,
-            maxY - minY
-          );
-          ctx.restore();
-          resolveClip();
-        };
-        clipImg.src = clip.imageUrl;
-      });
-    });
-
-    Promise.all(loadClippedImages).then(() => {
-      resolve(canvas.toDataURL("image/jpeg"));
-    });
-  });
-};
-
-// ローディングコンポーネント
-const LoadingSpinner = () => (
-  <div
-    style={{
-      display: "flex",
-      justifyContent: "center",
-      alignItems: "center",
-      marginTop: "20px",
-      flexDirection: "column",
-      gap: "10px",
-    }}
-  >
-    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
-    <p className="text-sm text-gray-600">PDF 表示中...</p>
-  </div>
-);
 
 // ページ選択コンポーネント
 const PageSelector = ({
@@ -473,136 +344,31 @@ const ClippedImagesGallery = ({
   </div>
 );
 
-// キャンバス操作フック
-const useCanvasOperations = () => {
-  const getCanvasCoordinates = (
-    event: React.MouseEvent<HTMLCanvasElement>,
-    canvas: HTMLCanvasElement
-  ): Point => {
-    const rect = canvas.getBoundingClientRect();
-    const displayWidth = canvas.clientWidth;
-    const displayHeight = canvas.clientHeight;
-    const actualWidth = canvas.width;
-    const actualHeight = canvas.height;
-    const scaleX = actualWidth / displayWidth;
-    const scaleY = actualHeight / displayHeight;
-
-    return {
-      x: (event.clientX - rect.left) * scaleX,
-      y: (event.clientY - rect.top) * scaleY,
-    };
-  };
-
-  const drawCanvas = (
-    canvas: HTMLCanvasElement,
-    image: string,
-    points: Point[],
-    windowWidth: number
-  ) => {
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const img = new Image();
-    img.src = image;
-    img.onload = () => {
-      const originalWidth = img.width;
-      const originalHeight = img.height;
-      const maxWidth = windowWidth * 0.9;
-      const scale = Math.min(1, maxWidth / originalWidth);
-
-      canvas.width = originalWidth;
-      canvas.height = originalHeight;
-      canvas.style.width = `${originalWidth * scale}px`;
-      canvas.style.height = `${originalHeight * scale}px`;
-
-      ctx.drawImage(img, 0, 0);
-      canvas.dataset.scale = scale.toString();
-
-      if (points.length > 0) {
-        // Draw polygon
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        points.forEach((point, index) => {
-          if (index > 0) ctx.lineTo(point.x, point.y);
-        });
-        if (points.length > 2) ctx.closePath();
-        ctx.strokeStyle = "red";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        // Draw points
-        points.forEach((point, index) => {
-          ctx.beginPath();
-          ctx.arc(point.x, point.y, 5, 0, Math.PI * 2);
-          ctx.fillStyle = "red";
-          ctx.fill();
-          ctx.fillStyle = "white";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.font = "bold 10px Arial";
-          ctx.fillText((index + 1).toString(), point.x, point.y);
-        });
-      }
-    };
-  };
-
-  return { getCanvasCoordinates, drawCanvas };
-};
-
-// メインアプリケーション
 const App = () => {
-  const [images, setImages] = useState<string[]>([]);
-  const [selectedPoints, setSelectedPoints] = useState<Point[]>([]);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [dragPointIndex, setDragPointIndex] = useState<number | null>(null);
-  const [clippedImages, setClippedImages] = useState<ClippedImageInfo[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const windowWidth = useWindowSize();
+  const { images, isLoading, convertPDFToImages } = usePDFConversion();
 
-  // カーソルスタイルの動的な設定
-  const getCanvasStyle = (event?: React.MouseEvent<HTMLCanvasElement>) => {
-    const baseStyle = {
-      border: "1px solid black",
-      display: "block",
-      maxWidth: "90%",
-      margin: "0 auto",
-    };
-
-    if (dragPointIndex !== null) {
-      return { ...baseStyle, cursor: "move" };
-    }
-
-    const canvas = canvasRef.current;
-    if (canvas && event && selectedPoints.length > 0) {
-      const coords = getCanvasCoordinates(event, canvas);
-      const isNearPoint = selectedPoints.some((point) => {
-        const distance = Math.sqrt(
-          Math.pow(point.x - coords.x, 2) + Math.pow(point.y - coords.y, 2)
-        );
-        return distance < 20;
-      });
-
-      if (isNearPoint) {
-        return { ...baseStyle, cursor: "pointer" };
-      }
-    }
-
-    return baseStyle;
-  };
-  const [canvasStyle, setCanvasStyle] = useState(getCanvasStyle());
+  const { clippedImages, setClippedImages, clipImage } = useImageClipping({
+    images,
+    currentImageIndex,
+  });
 
   const { getCanvasCoordinates, drawCanvas } = useCanvasOperations();
 
-  // ウィンドウリサイズを監視
-  useEffect(() => {
-    const handleResize = () => {
-      setWindowWidth(window.innerWidth);
-    };
-
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
+  const {
+    selectedPoints,
+    setSelectedPoints,
+    canvasStyle,
+    handleMouseDown,
+    handleMouseMove,
+    handleMouseUp,
+    handleMouseLeave,
+  } = useCanvasMouse({
+    canvasRef,
+    getCanvasCoordinates,
+  });
 
   // キャンバス描画の更新
   useEffect(() => {
@@ -612,140 +378,56 @@ const App = () => {
     drawCanvas(canvas, images[currentImageIndex], selectedPoints, windowWidth);
   }, [images, currentImageIndex, selectedPoints, windowWidth, drawCanvas]);
 
-  // PDFファイルアップロードの処理
   const handleFileUpload = async (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    setIsLoading(true);
-    try {
-      const convertedImages = await convertPDFToBase64Images(file);
-      setImages(convertedImages);
-    } catch (error) {
-      console.error("PDF conversion failed:", error);
-    } finally {
-      setIsLoading(false);
-    }
+    await convertPDFToImages(file);
   };
 
-  // マウスイベントハンドラー
-  const handleMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const coords = getCanvasCoordinates(event, canvas);
-    const pointIndex = selectedPoints.findIndex((point) => {
-      const distance = Math.sqrt(
-        Math.pow(point.x - coords.x, 2) + Math.pow(point.y - coords.y, 2)
-      );
-      return distance < 20;
-    });
-
-    if (pointIndex !== -1) {
-      setDragPointIndex(pointIndex);
-    } else {
-      setSelectedPoints([...selectedPoints, coords]);
-    }
-  };
-
-  const handleMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => {
-    if (dragPointIndex !== null) {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-
-      const coords = getCanvasCoordinates(event, canvas);
-      const newPoints = [...selectedPoints];
-      newPoints[dragPointIndex] = coords;
-      setSelectedPoints(newPoints);
-    }
-
-    setCanvasStyle(getCanvasStyle(event));
-  };
-
-  const handleMouseUp = () => {
-    setDragPointIndex(null);
-  };
-
-  // クリップした画像の確定
-  const handleClip = () => {
+  const handleClip = async () => {
     const canvas = canvasRef.current;
     if (!canvas || selectedPoints.length < 3) return;
 
-    const img = new Image();
-    img.src = images[currentImageIndex];
-    img.onload = () => {
-      const minX = Math.min(...selectedPoints.map((p) => p.x));
-      const minY = Math.min(...selectedPoints.map((p) => p.y));
-      const maxX = Math.max(...selectedPoints.map((p) => p.x));
-      const maxY = Math.max(...selectedPoints.map((p) => p.y));
-      const width = maxX - minX;
-      const height = maxY - minY;
-
-      const clipCanvas = document.createElement("canvas");
-      clipCanvas.width = width;
-      clipCanvas.height = height;
-      const clipCtx = clipCanvas.getContext("2d");
-      if (!clipCtx) return;
-
-      clipCtx.beginPath();
-      clipCtx.moveTo(selectedPoints[0].x - minX, selectedPoints[0].y - minY);
-      selectedPoints.forEach((point, index) => {
-        if (index > 0) {
-          clipCtx.lineTo(point.x - minX, point.y - minY);
-        }
-      });
-      clipCtx.closePath();
-      clipCtx.clip();
-
-      clipCtx.drawImage(img, minX, minY, width, height, 0, 0, width, height);
-
-      const clippedImageUrl = clipCanvas.toDataURL("image/jpeg");
-
-      const newClippedImage: ClippedImageInfo = {
-        imageUrl: clippedImageUrl,
-        coordinates: {
-          minX,
-          minY,
-          maxX,
-          maxY,
-          pageIndex: currentImageIndex,
-        },
-        points: [...selectedPoints],
-        zIndex: clippedImages.length,
-      };
-
-      setClippedImages((prev) => [newClippedImage, ...prev]);
+    try {
+      await clipImage(selectedPoints);
       setSelectedPoints([]);
-    };
+    } catch (error) {
+      console.error("画像のクリップに失敗しました:", error);
+    }
   };
 
   // 画像の再構築
   const handleReconstruct = async () => {
-    const reconstructedPages = await Promise.all(
-      images.map(async (originalImage, index) => {
-        const dimensions = await getImageDimensions(originalImage);
-        return reconstructFromClippedImages(
-          index,
-          dimensions.width,
-          dimensions.height,
-          clippedImages
-        );
-      })
-    );
+    try {
+      const reconstructedPages = await Promise.all(
+        images.map(async (originalImage, index) => {
+          const dimensions = await getImageDimensions(originalImage);
+          return reconstructFromClippedImages(
+            index,
+            dimensions.width,
+            dimensions.height,
+            clippedImages
+          );
+        })
+      );
 
-    const validPages = reconstructedPages.filter(
-      (page): page is string => page !== null
-    );
+      const validPages = reconstructedPages.filter(
+        (page): page is string => page !== null
+      );
 
-    if (validPages.length > 0) {
-      validPages.forEach((page, index) => {
-        const link = document.createElement("a");
-        link.download = `reconstructed-page-${index + 1}.jpg`;
-        link.href = page;
-        link.click();
-      });
+      if (validPages.length > 0) {
+        validPages.forEach((page, index) => {
+          const link = document.createElement("a");
+          link.download = `reconstructed-page-${index + 1}.jpg`;
+          link.href = page;
+          link.click();
+        });
+      }
+    } catch (error) {
+      console.error("画像の再構築に失敗しました:", error);
     }
   };
 
@@ -790,10 +472,7 @@ const App = () => {
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
-              onMouseLeave={() => {
-                setDragPointIndex(null);
-                setCanvasStyle(getCanvasStyle());
-              }}
+              onMouseLeave={handleMouseLeave}
               style={canvasStyle}
             />
           </div>
